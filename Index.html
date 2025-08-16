@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Swapper</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for a polished look */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .container-box {
+            background-color: #f3f4f6;
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease-in-out;
+            border: 2px solid #e5e7eb;
+        }
+
+        .container-box:hover {
+            transform: translateY(-5px);
+        }
+
+        .status-message {
+            padding: 0.75rem 1.25rem;
+            border-radius: 9999px;
+            text-align: center;
+            font-weight: 500;
+            margin-top: 1rem;
+        }
+
+        .btn-primary {
+            background-color: #1f2937;
+            color: #ffffff;
+            font-weight: 600;
+            padding: 0.75rem 1.5rem;
+            border-radius: 9999px;
+            transition: all 0.2s ease-in-out;
+        }
+
+        .btn-primary:hover {
+            background-color: #111827;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transform: translateY(-2px);
+        }
+
+        .btn-disabled {
+            background-color: #d1d5db;
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        .video-feed {
+            border-radius: 1.5rem;
+            transform: scaleX(-1); /* Mirror the video for a more natural feel */
+        }
+        
+        .loading-spinner {
+            border-top-color: #3498db;
+            -webkit-animation: spin 1s linear infinite;
+            animation: spin 1s linear infinite;
+        }
+        
+        @-webkit-keyframes spin {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 sm:p-8 flex items-center justify-center min-h-screen">
+
+    <div class="max-w-4xl w-full container-box">
+        <h1 class="text-3xl font-bold text-center mb-6 text-gray-800">Face Swapper</h1>
+        <p class="text-center text-gray-600 mb-8">Upload a photo, use your camera to capture your face, and replace it in the image.</p>
+
+        <!-- Status Message Area -->
+        <div id="status" class="status-message bg-blue-200 text-blue-800 mb-6 hidden"></div>
+
+        <div class="grid md:grid-cols-2 gap-8 items-start">
+            <!-- Upload & Original Image Section -->
+            <div class="flex flex-col items-center">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">1. Upload a Photo</h2>
+                <label class="cursor-pointer btn-primary">
+                    Select File
+                    <input type="file" id="imageUpload" accept="image/*" class="hidden">
+                </label>
+                <img id="uploadedImage" class="mt-6 max-w-full h-auto rounded-xl shadow-lg border-2 border-gray-300" style="display:none;" />
+            </div>
+
+            <!-- Camera & Replacement Section -->
+            <div id="cameraSection" class="flex flex-col items-center" style="display:none;">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">2. Get Your Face</h2>
+                <div class="relative w-full">
+                    <video id="video" class="video-feed w-full h-auto rounded-xl shadow-lg border-2 border-gray-300" autoplay muted playsinline></video>
+                    <div id="loading" class="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75 rounded-xl hidden">
+                        <div class="loading-spinner w-12 h-12 rounded-full border-4 border-gray-200"></div>
+                    </div>
+                </div>
+                <button id="takeSnapshotBtn" class="btn-primary mt-4" disabled>Replace Face</button>
+            </div>
+        </div>
+
+        <!-- Result Canvas & Download Section -->
+        <div id="resultSection" class="flex flex-col items-center mt-12" style="display:none;">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">3. Final Result</h2>
+            <canvas id="resultCanvas" class="w-full h-auto rounded-xl shadow-lg border-2 border-gray-300"></canvas>
+            <a id="downloadBtn" class="btn-primary mt-4 cursor-pointer" style="display:none;" download="face-swapped-image.png">Download Image</a>
+        </div>
+    </div>
+
+    <!-- Face-API.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script>
+        // Use a unique ID for the app, or a default if not defined
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // Get references to all HTML elements
+        const imageUpload = document.getElementById('imageUpload');
+        const uploadedImage = document.getElementById('uploadedImage');
+        const video = document.getElementById('video');
+        const takeSnapshotBtn = document.getElementById('takeSnapshotBtn');
+        const resultCanvas = document.getElementById('resultCanvas');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const statusDiv = document.getElementById('status');
+        const cameraSection = document.getElementById('cameraSection');
+        const resultSection = document.getElementById('resultSection');
+        const loadingSpinner = document.getElementById('loading');
+        
+        // Globals to store images and detection results
+        let uploadedImageElement = null;
+        let originalFaceDetection = null;
+
+        // Path to the face-api.js models. These are small files, so client-side loading is fine.
+        const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+
+        /**
+         * Displays a status message to the user.
+         * @param {string} message The message to display.
+         * @param {string} type The type of message (e.g., 'info', 'success', 'error').
+         */
+        function showStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            statusDiv.className = `status-message`;
+            if (type === 'info') statusDiv.classList.add('bg-blue-200', 'text-blue-800');
+            if (type === 'success') statusDiv.classList.add('bg-green-200', 'text-green-800');
+            if (type === 'error') statusDiv.classList.add('bg-red-200', 'text-red-800');
+        }
+
+        /**
+         * Hides the status message.
+         */
+        function hideStatus() {
+            statusDiv.style.display = 'none';
+        }
+
+        /**
+         * Loads the required face-api.js models asynchronously.
+         */
+        async function loadModels() {
+            showStatus('Loading face detection models...');
+            loadingSpinner.style.display = 'flex';
+            try {
+                // Load tiny face detector and 68-point face landmark models
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                ]);
+                showStatus('Models loaded successfully! You can now upload a photo.', 'success');
+                loadingSpinner.style.display = 'none';
+            } catch (err) {
+                console.error('Failed to load models:', err);
+                showStatus('Error loading models. Please try again.', 'error');
+                loadingSpinner.style.display = 'none';
+            }
+        }
+
+        /**
+         * Initializes and starts the camera stream.
+         */
+        async function startCamera() {
+            try {
+                // Request camera access and set the video source
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                // Once the camera is ready, enable the "Replace Face" button
+                video.addEventListener('loadedmetadata', () => {
+                    takeSnapshotBtn.disabled = false;
+                    showStatus('Camera is ready. Position your face in the frame.', 'info');
+                }, { once: true });
+            } catch (err) {
+                console.error('Error accessing the camera:', err);
+                showStatus('Could not access your camera. Please ensure permissions are granted.', 'error');
+            }
+        }
+
+        /**
+         * Handles the image file upload event.
+         * @param {Event} event The change event from the file input.
+         */
+        imageUpload.addEventListener('change', async (event) => {
+            uploadedImage.style.display = 'none';
+            hideStatus();
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showStatus('Processing image...');
+            const imageUrl = URL.createObjectURL(file);
+            uploadedImageElement = new Image();
+            uploadedImageElement.onload = async () => {
+                uploadedImage.src = imageUrl;
+                uploadedImage.style.display = 'block';
+
+                // Detect face in the uploaded image
+                const detections = await faceapi.detectSingleFace(uploadedImageElement, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+                if (detections) {
+                    originalFaceDetection = detections;
+                    showStatus('Face detected in the uploaded photo! You can now start the camera.', 'success');
+                    cameraSection.style.display = 'flex';
+                    // Start the camera automatically after a successful upload.
+                    startCamera();
+                } else {
+                    showStatus('No face detected in the uploaded photo. Please try another image.', 'error');
+                }
+            };
+            uploadedImageElement.src = imageUrl;
+        });
+
+        /**
+         * Handles the "Replace Face" button click.
+         */
+        takeSnapshotBtn.addEventListener('click', async () => {
+            if (!originalFaceDetection) {
+                showStatus('Please upload an image with a face first.', 'error');
+                return;
+            }
+
+            showStatus('Processing and swapping faces...');
+            
+            // Create a temporary canvas to capture a frame from the video
+            const tempCanvas = document.createElement('canvas');
+            const tempContext = tempCanvas.getContext('2d');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            tempContext.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+
+            // Detect face in the captured camera frame
+            const cameraFaceDetection = await faceapi.detectSingleFace(tempCanvas, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+
+            if (!cameraFaceDetection) {
+                showStatus('No face detected in your camera view. Please try again.', 'error');
+                return;
+            }
+
+            // Get bounding box of the face from the original image and the camera frame
+            const originalBox = originalFaceDetection.detection.box;
+            const cameraBox = cameraFaceDetection.detection.box;
+
+            // Set the result canvas dimensions to match the original image
+            resultCanvas.width = uploadedImageElement.width;
+            resultCanvas.height = uploadedImageElement.height;
+            const resultContext = resultCanvas.getContext('2d');
+
+            // Draw the original image onto the canvas
+            resultContext.drawImage(uploadedImageElement, 0, 0, resultCanvas.width, resultCanvas.height);
+
+            // Draw the camera face onto the original image
+            // We'll crop the camera face and draw it at the original face's position and size
+            resultContext.drawImage(
+                video,
+                cameraBox.x,
+                cameraBox.y,
+                cameraBox.width,
+                cameraBox.height,
+                originalBox.x,
+                originalBox.y,
+                originalBox.width,
+                originalBox.height
+            );
+
+            // Show the result and download button
+            resultSection.style.display = 'flex';
+            downloadBtn.style.display = 'block';
+            showStatus('Face swap complete!', 'success');
+        });
+
+        // Set up the app on page load
+        window.onload = loadModels;
+
+        // Download the canvas as a PNG
+        downloadBtn.addEventListener('click', () => {
+            const dataURL = resultCanvas.toDataURL('image/png');
+            downloadBtn.href = dataURL;
+        });
+    </script>
+</body>
+  </html>
